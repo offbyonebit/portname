@@ -7,6 +7,8 @@ import re
 import shutil
 import subprocess
 
+from portname import wireplumber
+
 PATHS_DIR = "/usr/share/alsa-card-profile/mixer/paths"
 
 # Port names must be reasonable: 1-64 chars, no control characters
@@ -28,7 +30,12 @@ def get_devices():
 
     Returns a list of dicts:
         [{"device_name": str, "device_description": str, "alsa_card": str,
-          "routes": [{"name": str, "description": str, "direction": str, "available": str}]}]
+          "device_bus": str, "node_names": [str],
+          "routes": [{"name": str, "description": str, "direction": str,
+                       "available": str, "rename_method": str}]}]
+
+    rename_method is "path_file" for routes with ALSA path config files,
+    or "wireplumber" for USB routes without path files (renamed via WirePlumber rules).
     """
     if not shutil.which("pw-dump"):
         raise RuntimeError(
@@ -50,6 +57,18 @@ def get_devices():
     except json.JSONDecodeError:
         raise RuntimeError("pw-dump returned invalid JSON — PipeWire may be misconfigured")
 
+    # First pass: collect node names keyed by device.name so we can associate
+    # PipeWire nodes with their parent devices.
+    device_nodes = {}  # device.name -> list of node.name
+    for obj in data:
+        props = obj.get("info", {}).get("props", {})
+        node_name = props.get("node.name", "")
+        dev_name = props.get("device.name", "")
+        media_class = props.get("media.class", "")
+        if node_name and dev_name and media_class.startswith("Audio/"):
+            device_nodes.setdefault(dev_name, []).append(node_name)
+
+    # Second pass: build device list
     devices = []
     for obj in data:
         props = obj.get("info", {}).get("props", {})
@@ -63,13 +82,24 @@ def get_devices():
         if not enum_routes:
             continue
 
+        device_bus = props.get("device.bus", "")
+        dev_name = props.get("device.name", "")
+        is_usb = device_bus == "usb"
+
         routes = []
         for route in enum_routes:
             route_name = route.get("name", "")
-            # Only include routes that have a corresponding path file
+            # Check if a corresponding ALSA path file exists
             path_file = os.path.join(PATHS_DIR, f"{route_name}.conf")
             orig_file = path_file + ".orig"
-            if not os.path.exists(path_file) and not os.path.exists(orig_file):
+            has_path_file = os.path.exists(path_file) or os.path.exists(orig_file)
+
+            if has_path_file:
+                rename_method = "path_file"
+            elif is_usb:
+                rename_method = "wireplumber"
+            else:
+                # Non-USB device without a path file -- skip as before
                 continue
 
             routes.append({
@@ -77,13 +107,16 @@ def get_devices():
                 "description": route.get("description", route_name),
                 "direction": route.get("direction", "Unknown"),
                 "available": route.get("available", "unknown"),
+                "rename_method": rename_method,
             })
 
         if routes:
             devices.append({
-                "device_name": props.get("device.name", ""),
+                "device_name": dev_name,
                 "device_description": props.get("device.description", props.get("alsa.card_name", "Unknown")),
                 "alsa_card": str(props.get("alsa.card", "")),
+                "device_bus": device_bus,
+                "node_names": device_nodes.get(dev_name, []),
                 "routes": routes,
             })
 
@@ -92,6 +125,8 @@ def get_devices():
 
 def get_path_file(route_name):
     """Return the full path to the ALSA path config file for a route."""
+    if ".." in route_name or "/" in route_name or "\\" in route_name:
+        raise ValueError(f"Invalid route name: {route_name}")
     path = os.path.join(PATHS_DIR, f"{route_name}.conf")
     if not os.path.exists(path) and not os.path.exists(path + ".orig"):
         raise FileNotFoundError(f"No path file found for route '{route_name}'")
@@ -174,12 +209,29 @@ def _modify_description(orig_path, new_description):
     return "".join(result)
 
 
-def rename_port(route_name, new_name):
-    """Rename an audio port. Must be run as root."""
+def rename_port(route_name, new_name, method="path_file", node_name=None):
+    """Rename an audio port. Must be run as root.
+
+    Args:
+        route_name: The route/port name (e.g. "analog-output-lineout").
+        new_name: The new display name.
+        method: "path_file" (ALSA path config) or "wireplumber" (WirePlumber rule).
+        node_name: Required when method is "wireplumber". The PipeWire node.name
+                   to target (e.g. "alsa_output.usb-...").
+    """
     if os.geteuid() != 0:
         raise PermissionError("Must be run as root")
 
     new_name = validate_port_name(new_name)
+
+    if method == "wireplumber":
+        if not node_name:
+            raise ValueError("node_name is required for WirePlumber rename")
+        wireplumber.rename_node(node_name, new_name)
+        restart_pipewire()
+        return
+
+    # Default: ALSA path file method
     path = get_path_file(route_name)
 
     # Set up dpkg-divert if not already done
@@ -203,11 +255,25 @@ def rename_port(route_name, new_name):
     restart_pipewire()
 
 
-def revert_port(route_name):
-    """Revert a renamed port to its original name. Must be run as root."""
+def revert_port(route_name, method="path_file", node_name=None):
+    """Revert a renamed port to its original name. Must be run as root.
+
+    Args:
+        route_name: The route/port name (e.g. "analog-output-lineout").
+        method: "path_file" (ALSA path config) or "wireplumber" (WirePlumber rule).
+        node_name: Required when method is "wireplumber".
+    """
     if os.geteuid() != 0:
         raise PermissionError("Must be run as root")
 
+    if method == "wireplumber":
+        if not node_name:
+            raise ValueError("node_name is required for WirePlumber revert")
+        wireplumber.revert_node(node_name)
+        restart_pipewire()
+        return
+
+    # Default: ALSA path file method
     path = get_path_file(route_name)
 
     if not is_renamed(route_name):
