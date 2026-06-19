@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=64"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "portname"
@@ -12,11 +12,10 @@ requires-python = ">=3.8"
 dependencies = []
 keywords = ["pipewire", "alsa", "audio", "pulseaudio", "linux", "rename"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Environment :: X11 Applications :: GTK",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Topic :: Multimedia :: Sound/Audio",
@@ -25,6 +24,9 @@ classifiers = [
 [project.scripts]
 portname = "portname.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["portname*"]
+
 [project.urls]
-Homepage = "https://github.com/slowe6629/portname"
-Issues = "https://github.com/slowe6629/portname/issues"
+Homepage = "https://github.com/offbyonebit/portname"
+Issues = "https://github.com/offbyonebit/portname/issues"

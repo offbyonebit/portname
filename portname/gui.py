@@ -4,9 +4,13 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, GLib, Pango  # noqa: E402
 
-from portname.core import get_devices, is_renamed, get_original_description, validate_port_name
+from portname.core import (
+    get_devices, is_renamed, get_original_description, validate_port_name,
+    node_name_for_route,
+)
 from portname.automute import get_auto_mute_status, set_auto_mute
 from portname.privilege import run_as_root
+from portname import wireplumber
 
 
 class PortNameWindow(Gtk.Window):
@@ -85,12 +89,21 @@ class PortNameWindow(Gtk.Window):
 
         for direction_label, routes in [("Output", outputs), ("Input", inputs)]:
             for route in routes:
-                row = self._create_route_row(route, direction_label)
+                row = self._create_route_row(dev, route, direction_label)
                 listbox.add(row)
 
         self.main_box.pack_start(frame, False, False, 0)
 
-    def _create_route_row(self, route, direction_label):
+    def _is_route_renamed(self, dev, route):
+        """Return True if this route has been renamed by either method."""
+        if route["rename_method"] == "wireplumber":
+            node_name = node_name_for_route(dev, route)
+            if node_name:
+                return wireplumber.is_node_renamed(node_name)
+            return False
+        return is_renamed(route["name"])
+
+    def _create_route_row(self, dev, route, direction_label):
         row = Gtk.ListBoxRow()
         row.set_activatable(False)
         hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
@@ -117,7 +130,7 @@ class PortNameWindow(Gtk.Window):
         hbox.pack_start(name_label, True, True, 0)
 
         # Status badges
-        renamed = is_renamed(route["name"])
+        renamed = self._is_route_renamed(dev, route)
         badge_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
 
         if renamed:
@@ -136,18 +149,18 @@ class PortNameWindow(Gtk.Window):
 
         # Action buttons
         rename_btn = Gtk.Button(label="Rename")
-        rename_btn.connect("clicked", self._on_rename_clicked, route)
+        rename_btn.connect("clicked", self._on_rename_clicked, dev, route)
         hbox.pack_end(rename_btn, False, False, 0)
 
         if renamed:
             revert_btn = Gtk.Button(label="Revert")
-            revert_btn.connect("clicked", self._on_revert_clicked, route)
+            revert_btn.connect("clicked", self._on_revert_clicked, dev, route)
             hbox.pack_end(revert_btn, False, False, 0)
 
         row.add(hbox)
         return row
 
-    def _on_rename_clicked(self, button, route):
+    def _on_rename_clicked(self, button, dev, route):
         dialog = Gtk.Dialog(
             title="Rename Audio Port",
             parent=self,
@@ -187,8 +200,11 @@ class PortNameWindow(Gtk.Window):
                 return
             self._do_rename(route["name"], new_name)
 
-    def _on_revert_clicked(self, button, route):
-        orig = get_original_description(route["name"]) or "original"
+    def _on_revert_clicked(self, button, dev, route):
+        if route["rename_method"] == "wireplumber":
+            orig = "original"
+        else:
+            orig = get_original_description(route["name"]) or "original"
         dialog = Gtk.MessageDialog(
             parent=self,
             flags=Gtk.DialogFlags.MODAL,
