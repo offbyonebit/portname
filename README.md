@@ -2,7 +2,7 @@
 
 Ever wished you could change "Line Out" to "JBL Headset" or "Headphones" to "Pebble Speakers" in your Sound Settings? Now you can.
 
-**Portname** lets you rename the audio input/output ports that appear in your system's Sound Settings panel. Works with PipeWire and ALSA on any Linux distribution.
+**Portname** lets you rename the audio input/output ports that appear in your system's Sound Settings panel. Works with PipeWire and ALSA on any Linux distribution, for both built-in sound cards and USB audio devices.
 
 ## Before & After
 
@@ -70,6 +70,10 @@ portname auto-mute status
 
 ## How It Works
 
+Portname picks the method for you based on the device.
+
+### Built-in (PCI/HDA) sound cards
+
 Audio port names on Linux come from ALSA card profile path files in `/usr/share/alsa-card-profile/mixer/paths/`. Portname:
 
 1. Backs up the original file to `<name>.conf.orig`
@@ -77,6 +81,15 @@ Audio port names on Linux come from ALSA card profile path files in `/usr/share/
 3. Restarts PipeWire so the change appears immediately
 
 Your custom names survive reboots. On **Debian/Ubuntu** the backup is registered with `dpkg-divert`, which also tells the package manager to skip the file on upgrades. On **other distros** (Arch, Fedora, etc.) the backup/restore logic is identical but there is no package-manager hook. An upgrade of `alsa-card-profile` can silently overwrite the modified file. Run `sudo portname check` after such an upgrade to detect and automatically re-apply any clobbered names. AUR/Copr package descriptions should note this and suggest adding a post-upgrade hook that calls `portname check`.
+
+### USB audio devices
+
+USB devices (headsets, DACs, webcams) have no ALSA profile path to edit, so `portname rename` writes a WirePlumber rule instead and restarts PipeWire. The command is the same as for built-in cards. Portname detects your WirePlumber version and writes the matching format:
+
+- **WirePlumber 0.4** (Ubuntu 24.04, Linux Mint 22): a Lua rule at `/etc/wireplumber/main.lua.d/90-portname-<node>.lua`
+- **WirePlumber 0.5+**: a config rule at `/etc/wireplumber/wireplumber.conf.d/90-portname-<node>.conf`
+
+`portname revert` deletes the rule, and `./install.sh --uninstall` removes any left over.
 
 ## Compatibility
 

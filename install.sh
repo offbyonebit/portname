@@ -56,6 +56,9 @@ uninstall() {
     sudo rm -f "$POLICY_DIR/com.github.portname.policy"
     sudo rm -f "$DESKTOP_DIR/portname.desktop"
 
+    # Remove any leftover WirePlumber rename rules
+    sudo rm -f /etc/wireplumber/wireplumber.conf.d/90-portname-*.conf /etc/wireplumber/main.lua.d/90-portname-*.lua
+
     echo "Uninstalled."
 }
 
