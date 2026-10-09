@@ -238,6 +238,25 @@ class TestGetDevices(unittest.TestCase):
         self.assertEqual(dev["routes"][0]["name"], "analog-output-lineout")
         self.assertEqual(dev["routes"][0]["direction"], "Output")
 
+    @patch("portname.core.os.path.exists", return_value=False)
+    @patch("portname.core.shutil.which", return_value="/usr/bin/pw-dump")
+    @patch("portname.core.subprocess.run")
+    def test_links_nodes_by_device_id(self, mock_run, mock_which, mock_exists):
+        """Newer PipeWire nodes carry device.id (no device.name)."""
+        dump = [
+            {"id": 60, "type": "PipeWire:Interface:Device", "info": {
+                "props": {"device.api": "alsa", "device.name": "alsa_card.usb-X",
+                          "device.bus": "usb", "device.description": "USB Mic"},
+                "params": {"EnumRoute": [{"name": "analog-input-mic",
+                                          "description": "Mic", "direction": "Input"}]}}},
+            {"id": 46, "type": "PipeWire:Interface:Node", "info": {
+                "props": {"node.name": "alsa_input.usb-X.mono-fallback",
+                          "device.id": 60, "media.class": "Audio/Source"}}},
+        ]
+        mock_run.return_value = MagicMock(stdout=json.dumps(dump), returncode=0)
+        devices = get_devices()
+        self.assertEqual(devices[0]["node_names"], ["alsa_input.usb-X.mono-fallback"])
+
     @patch("portname.core.shutil.which", return_value=None)
     def test_raises_when_pw_dump_missing(self, mock_which):
         with self.assertRaises(RuntimeError) as ctx:

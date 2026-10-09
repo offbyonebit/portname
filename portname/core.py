@@ -89,10 +89,14 @@ def get_devices():
     for obj in data:
         props = obj.get("info", {}).get("props", {})
         node_name = props.get("node.name", "")
-        dev_name = props.get("device.name", "")
         media_class = props.get("media.class", "")
-        if node_name and dev_name and media_class.startswith("Audio/"):
-            device_nodes.setdefault(dev_name, []).append(node_name)
+        if not (node_name and media_class.startswith("Audio/")):
+            continue
+        # Older PipeWire sets device.name on nodes; newer versions only set
+        # device.id, which matches the id of the parent device object.
+        dev_key = props.get("device.name") or props.get("device.id")
+        if dev_key not in (None, ""):
+            device_nodes.setdefault(dev_key, []).append(node_name)
 
     # Second pass: build device list
     devices = []
@@ -142,7 +146,7 @@ def get_devices():
                 "device_description": props.get("device.description", props.get("alsa.card_name", "Unknown")),
                 "alsa_card": str(props.get("alsa.card", "")),
                 "device_bus": device_bus,
-                "node_names": device_nodes.get(dev_name, []),
+                "node_names": device_nodes.get(dev_name) or device_nodes.get(obj.get("id"), []),
                 "routes": routes,
             })
 
