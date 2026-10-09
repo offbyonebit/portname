@@ -107,6 +107,15 @@ cd portname
 
 This reverts all renamed ports to their original names and removes portname.
 
+## Support
+
+This project is free and I don't ask for anything. If it's useful to you,
+a star on the repo is appreciated, and if you want to follow along with
+other things I'm building, you can find them under
+[@offbyonebit](https://github.com/offbyonebit).
+
+If you'd like to support development, you can [sponsor me on GitHub](https://github.com/sponsors/offbyonebit).
+
 ## License
 
 MIT
