@@ -70,8 +70,15 @@ def get_devices():
         )
 
     try:
+        cmd = ["pw-dump"]
+        if os.geteuid() == 0:
+            # sudo drops XDG_RUNTIME_DIR, so root can't see the user's PipeWire
+            # socket. Query it as the real user, like restart_pipewire() does.
+            user, uid = _get_real_user()
+            if user != "root":
+                cmd = ["sudo", "-u", user, f"XDG_RUNTIME_DIR=/run/user/{uid}", "pw-dump"]
         result = subprocess.run(
-            ["pw-dump"], capture_output=True, text=True, check=True, timeout=10
+            cmd, capture_output=True, text=True, check=True, timeout=10
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError("pw-dump timed out — PipeWire may not be running")
