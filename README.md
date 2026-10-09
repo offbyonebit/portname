@@ -84,7 +84,12 @@ Your custom names survive reboots. On **Debian/Ubuntu** the backup is registered
 
 ### USB audio devices
 
-USB devices (headsets, DACs, webcams) have no ALSA profile path to edit, so `portname rename` writes a WirePlumber rule instead, as `/etc/wireplumber/wireplumber.conf.d/90-portname-<node>.conf`, and restarts WirePlumber. The command is the same. `portname revert` deletes the rule, and `./install.sh --uninstall` removes any left over.
+USB devices (headsets, DACs, webcams) have no ALSA profile path to edit, so `portname rename` writes a WirePlumber rule instead and restarts PipeWire. The command is the same as for built-in cards. Portname detects your WirePlumber version and writes the matching format:
+
+- **WirePlumber 0.4** (Ubuntu 24.04, Linux Mint 22): a Lua rule at `/etc/wireplumber/main.lua.d/90-portname-<node>.lua`
+- **WirePlumber 0.5+**: a config rule at `/etc/wireplumber/wireplumber.conf.d/90-portname-<node>.conf`
+
+`portname revert` deletes the rule, and `./install.sh --uninstall` removes any left over.
 
 ## Compatibility
 

@@ -284,3 +284,48 @@ node.description = "Node Two"
         reverted = wireplumber.revert_all()
 
         assert reverted == []
+
+
+class TestLuaFormat:
+    """WirePlumber 0.4 reads Lua rules from main.lua.d."""
+
+    NODE = "alsa_input.usb-046d_Brio_101-02.mono-fallback"
+
+    def _use_lua(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(wireplumber, "_FORMAT", "lua")
+        monkeypatch.setattr(wireplumber, "LUA_DIR", str(tmp_path))
+        monkeypatch.setattr(wireplumber.os, "geteuid", lambda: 0)
+
+    def test_generate_lua_rule(self, monkeypatch):
+        monkeypatch.setattr(wireplumber, "_FORMAT", "lua")
+        out = wireplumber.generate_rule(self.NODE, "Desk Mic")
+        assert "alsa_monitor.rules" in out
+        assert f'{{ "node.name", "equals", "{self.NODE}" }}' in out
+        assert '["node.description"] = "Desk Mic"' in out
+        assert '["node.nick"] = "Desk Mic"' in out
+
+    def test_escapes_quotes_and_backslashes(self, monkeypatch):
+        monkeypatch.setattr(wireplumber, "_FORMAT", "lua")
+        out = wireplumber.generate_rule(self.NODE, 'a"b\\c')
+        assert '= "a\\"b\\\\c"' in out
+
+    def test_rename_revert_roundtrip(self, monkeypatch, tmp_path):
+        self._use_lua(monkeypatch, tmp_path)
+        wireplumber.rename_node(self.NODE, 'My "Mic"')
+        files = list(tmp_path.iterdir())
+        assert len(files) == 1 and files[0].suffix == ".lua"
+        assert wireplumber.is_node_renamed(self.NODE)
+        assert wireplumber.get_current_description(self.NODE) == 'My "Mic"'
+        assert wireplumber.get_all_renamed() == [(self.NODE, 'My "Mic"')]
+        wireplumber.revert_node(self.NODE)
+        assert not list(tmp_path.iterdir())
+
+    def test_detects_version(self, monkeypatch):
+        class R:
+            stdout = "wireplumber\nCompiled with libwireplumber 0.4.17\n"
+        monkeypatch.setattr(wireplumber, "_FORMAT", None)
+        monkeypatch.setattr(wireplumber.subprocess, "run", lambda *a, **k: R())
+        assert wireplumber._detect_format() == "lua"
+        R.stdout = "libwireplumber 0.5.6"
+        monkeypatch.setattr(wireplumber, "_FORMAT", None)
+        assert wireplumber._detect_format() == "conf"

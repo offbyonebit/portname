@@ -57,7 +57,7 @@ uninstall() {
     sudo rm -f "$DESKTOP_DIR/portname.desktop"
 
     # Remove any leftover WirePlumber rename rules
-    sudo rm -f /etc/wireplumber/wireplumber.conf.d/90-portname-*.conf
+    sudo rm -f /etc/wireplumber/wireplumber.conf.d/90-portname-*.conf /etc/wireplumber/main.lua.d/90-portname-*.lua
 
     echo "Uninstalled."
 }
