@@ -27,6 +27,13 @@ class PortNameWindow(Gtk.Window):
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         scrolled.add(self.main_box)
 
+        header = Gtk.HeaderBar(title="Portname — Audio Port Renamer")
+        header.set_show_close_button(True)
+        repair_btn = Gtk.Button(label="Repair Missing Ports")
+        repair_btn.connect("clicked", self._on_repair_clicked)
+        header.pack_end(repair_btn)
+        self.set_titlebar(header)
+
         self._build_device_list()
 
     def _build_device_list(self):
@@ -198,7 +205,7 @@ class PortNameWindow(Gtk.Window):
             except ValueError as e:
                 self._show_error(str(e))
                 return
-            self._do_rename(route["name"], new_name)
+            self._do_rename(route["name"], new_name, dev["device_name"])
 
     def _on_revert_clicked(self, button, dev, route):
         if route["rename_method"] == "wireplumber":
@@ -216,7 +223,7 @@ class PortNameWindow(Gtk.Window):
         dialog.destroy()
 
         if response == Gtk.ResponseType.YES:
-            self._do_revert(route["name"])
+            self._do_revert(route["name"], dev["device_name"])
 
     def _on_auto_mute_toggle(self, button, card):
         current = get_auto_mute_status(card)
@@ -246,21 +253,29 @@ class PortNameWindow(Gtk.Window):
                 return line
         return lines[-1].strip()
 
-    def _do_rename(self, route_name, new_name):
-        result = run_as_root(["rename", route_name, new_name])
+    def _do_rename(self, route_name, new_name, device_name):
+        result = run_as_root(["rename", route_name, new_name, "--device", device_name])
         if result.returncode == 0:
             self._show_info(f"Renamed to '{new_name}'. Refreshing...")
             GLib.timeout_add(2000, self._build_device_list)
         else:
             self._show_error(f"Rename failed: {self._extract_error(result.stderr)}")
 
-    def _do_revert(self, route_name):
-        result = run_as_root(["revert", route_name])
+    def _do_revert(self, route_name, device_name):
+        result = run_as_root(["revert", route_name, "--device", device_name])
         if result.returncode == 0:
             self._show_info("Reverted to original name. Refreshing...")
             GLib.timeout_add(2000, self._build_device_list)
         else:
             self._show_error(f"Revert failed: {self._extract_error(result.stderr)}")
+
+    def _on_repair_clicked(self, button):
+        result = run_as_root(["repair"])
+        if result.returncode == 0:
+            self._show_info(result.stdout.strip() or "Repair complete. Refreshing...")
+        else:
+            self._show_error(f"Repair failed: {self._extract_error(result.stderr)}")
+        GLib.timeout_add(2000, self._build_device_list)
 
     def _show_error(self, message):
         dialog = Gtk.MessageDialog(

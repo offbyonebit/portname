@@ -318,15 +318,17 @@ class TestEnsureBackup(unittest.TestCase):
         mock_copy.assert_called_once_with("/path/file.conf", "/path/file.conf.orig")
 
     @patch("portname.core._has_dpkg_divert", return_value=True)
+    @patch("portname.core._get_diversions", return_value={})
     @patch("portname.core._get_diverted_paths", return_value=set())
     @patch("portname.core.subprocess.run")
     @patch("portname.core.os.path.exists", return_value=False)
-    def test_dpkg_divert_on_debian(self, mock_exists, mock_run, mock_diverted, mock_divert):
+    def test_dpkg_divert_on_debian(self, mock_exists, mock_run, mock_diverted, mock_targets, mock_divert):
         mock_run.return_value = MagicMock(returncode=0)
         _ensure_backup("/path/file.conf")
         mock_run.assert_called_once()
         args, _kwargs = mock_run.call_args
         self.assertEqual(args[0][0], "dpkg-divert")
+        self.assertEqual(args[0][args[0].index("--divert") + 1], "/path/file.conf.orig")
 
     @patch("portname.core._has_dpkg_divert", return_value=True)
     @patch("portname.core._get_diverted_paths", return_value={"/path/file.conf"})
@@ -430,6 +432,15 @@ class TestNodeNameForRoute(unittest.TestCase):
 
 
 class TestCheckRenames(unittest.TestCase):
+    def setUp(self):
+        # These unit tests must never inspect the host's audio files or database.
+        patcher = patch("portname.core.PATHS_DIR", "/nonexistent-portname-test-paths")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch("portname.core._get_diversions", return_value={})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     @patch("portname.core.os.geteuid", return_value=0)
     @patch("portname.core._load_custom_name_store")
     @patch("portname.core.get_all_renamed_path_files", return_value=[])
@@ -518,7 +529,11 @@ class TestRevertAll(unittest.TestCase):
     ):
         mock_revert.side_effect = [None, RuntimeError("boom")]
         mock_get_renamed.return_value = ["foo", "bar"]
-        result = revert_all()
+        with patch("portname.core.restart_pipewire") as restart, patch(
+            "portname.core._load_custom_name_store", return_value={"path_file": {}, "wireplumber": {}}
+        ):
+            result = revert_all()
+        restart.assert_called_once()
         self.assertEqual(result["reverted"], ["foo"])
         self.assertEqual(result["failed"], [("bar", "boom")])
 

@@ -40,6 +40,7 @@ def cmd_list(args):
 
     for dev in devices:
         print(f"\n{dev['device_description']} (card {dev['alsa_card']})")
+        print(f"  Device: {dev['device_name']}")
 
         outputs = [r for r in dev["routes"] if r["direction"] == "Output"]
         inputs = [r for r in dev["routes"] if r["direction"] == "Input"]
@@ -61,17 +62,14 @@ def cmd_list(args):
 def cmd_rename(args):
     """Rename an audio port."""
     ensure_root_or_exit()
-    dev, route = find_route(args.route)
-    if route is None:
-        _route_not_found(args.route)
-
-    method = route["rename_method"]
-    node_name = node_name_for_route(dev, route)
-    if method == "wireplumber" and not node_name:
-        print(f"Error: No PipeWire node found for route '{args.route}'", file=sys.stderr)
-        sys.exit(1)
-
     try:
+        dev, route = find_route(args.route, device_name=getattr(args, "device", None))
+        if route is None:
+            _route_not_found(args.route)
+        method = route["rename_method"]
+        node_name = node_name_for_route(dev, route)
+        if method == "wireplumber" and not node_name:
+            raise ValueError(f"No PipeWire node found for route '{args.route}'")
         rename_port(args.route, args.name, method=method, node_name=node_name)
         print(f"Renamed '{args.route}' to '{args.name}'")
         print("Restarting PipeWire... done.")
@@ -96,10 +94,11 @@ def cmd_revert(args):
                 print("\nThe following could not be reverted:", file=sys.stderr)
                 for name, err in failed:
                     print(f"  - {name}: {err}", file=sys.stderr)
+                sys.exit(1)
             if not reverted and not failed:
                 print("No renamed ports to revert.")
         elif args.route:
-            dev, route = find_route(args.route)
+            dev, route = find_route(args.route, device_name=getattr(args, "device", None))
             if route is None:
                 _route_not_found(args.route)
             method = route["rename_method"]
@@ -126,7 +125,7 @@ def cmd_check(args):
         repaired = result["repaired"]
         failed = result["failed"]
         if repaired:
-            print("Re-applied the following clobbered renames:")
+            print("Re-applied renames or restored missing ports:")
             for name in repaired:
                 print(f"  - {name}")
             print("Restarting PipeWire... done.")
@@ -134,8 +133,9 @@ def cmd_check(args):
             print("\nThe following could not be repaired:", file=sys.stderr)
             for name, err in failed:
                 print(f"  - {name}: {err}", file=sys.stderr)
+            sys.exit(1)
         if not repaired and not failed:
-            print("No clobbered renames found.")
+            print("No clobbered renames found or missing ports to repair.")
     except (FileNotFoundError, ValueError, RuntimeError, PermissionError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -199,14 +199,17 @@ def main():
     rename_p = subparsers.add_parser("rename", help="Rename an audio port (requires sudo)")
     rename_p.add_argument("route", help="Route name (e.g. analog-output-lineout)")
     rename_p.add_argument("name", help="New display name")
+    rename_p.add_argument("--device", help="Device name from 'portname list' (required for shared routes)")
 
     # revert
     revert_p = subparsers.add_parser("revert", help="Revert a renamed port (requires sudo)")
     revert_p.add_argument("route", nargs="?", help="Route name to revert")
     revert_p.add_argument("--all", action="store_true", help="Revert all renamed ports")
+    revert_p.add_argument("--device", help="Device name from 'portname list' (required for shared routes)")
 
     # check
-    subparsers.add_parser("check", help="Re-apply renames clobbered by package upgrades")
+    subparsers.add_parser("check", aliases=["repair"],
+                          help="Restore missing ports and re-apply clobbered renames (requires sudo)")
 
     # auto-mute
     am_p = subparsers.add_parser("auto-mute", help="Toggle Auto-Mute Mode")
@@ -227,7 +230,7 @@ def main():
         cmd_rename(args)
     elif args.command == "revert":
         cmd_revert(args)
-    elif args.command == "check":
+    elif args.command in ("check", "repair"):
         cmd_check(args)
     elif args.command == "auto-mute":
         cmd_auto_mute(args)

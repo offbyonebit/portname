@@ -164,7 +164,9 @@ class TestCmdCheck:
     @patch("portname.cli.ensure_root_or_exit")
     @patch("portname.cli.check_renames", return_value={"repaired": [], "failed": [("foo", "broken")]})
     def test_reports_failed_renames(self, mock_check, mock_root, capsys):
-        cli.cmd_check(MagicMock())
+        with pytest.raises(SystemExit) as exc_info:
+            cli.cmd_check(MagicMock())
+        assert exc_info.value.code == 1
         err = capsys.readouterr().err
         assert "could not be repaired" in err
         assert "foo" in err
@@ -205,5 +207,11 @@ class TestMain:
     @patch("portname.cli.cmd_check")
     def test_dispatches_check(self, mock_check):
         with patch.object(sys, "argv", ["portname", "check"]):
+            cli.main()
+        mock_check.assert_called_once()
+
+    @patch("portname.cli.cmd_check")
+    def test_dispatches_repair(self, mock_check):
+        with patch.object(sys, "argv", ["portname", "repair"]):
             cli.main()
         mock_check.assert_called_once()

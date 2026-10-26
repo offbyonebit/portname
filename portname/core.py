@@ -32,23 +32,47 @@ def _has_dpkg_divert():
     return shutil.which("dpkg-divert") is not None
 
 
-def _get_diverted_paths():
-    """Return a set of paths currently diverted by dpkg-divert in PATHS_DIR."""
-    diverted = set()
+def _get_diversions():
+    """Read diversion targets and owners with stable, untranslated output."""
     if not _has_dpkg_divert():
-        return diverted
-    result = subprocess.run(
-        ["dpkg-divert", "--list"], capture_output=True, text=True
-    )
+        return {}
+    try:
+        result = subprocess.run(
+            ["dpkg-divert", "--list"], capture_output=True, text=True,
+            check=True, env={**os.environ, "LC_ALL": "C"},
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Cannot read diversions: {e.stderr.strip() or 'unknown error'}")
+    diverted = {}
     for line in result.stdout.splitlines():
-        if PATHS_DIR in line and "local diversion" in line:
-            parts = line.split()
-            try:
-                idx = parts.index("of")
-                diverted.add(parts[idx + 1])
-            except (ValueError, IndexError):
-                continue
+        match = re.fullmatch(r"(local diversion|diversion) of (.+) to (.+?)(?: by (\S+))?", line)
+        if match:
+            kind, path, target, _package = match.groups()
+            if os.path.dirname(path) == PATHS_DIR and path.endswith(".conf"):
+                diverted[path] = (target, kind == "local diversion")
     return diverted
+
+
+def _get_diverted_paths():
+    """Return local diversions using Portname's current or legacy backup name."""
+    return {
+        path for path, (target, local) in _get_diversions().items()
+        if local and target in (path + ".orig", path + ".distrib")
+    }
+
+
+def _backup_path(path):
+    """Use the registered target, including .distrib from older versions."""
+    diversion = _get_diversions().get(path)
+    if diversion:
+        target, local = diversion
+        if not local or target not in (path + ".orig", path + ".distrib"):
+            raise RuntimeError(f"Refusing to change an unrelated diversion of {path}")
+        return target
+    for suffix in (".orig", ".distrib"):
+        if os.path.exists(path + suffix):
+            return path + suffix
+    return path + ".orig"
 
 
 def get_devices():
@@ -129,7 +153,8 @@ def get_devices():
             # Check if a corresponding ALSA path file exists
             path_file = os.path.join(PATHS_DIR, f"{route_name}.conf")
             orig_file = path_file + ".orig"
-            has_path_file = os.path.exists(path_file) or os.path.exists(orig_file)
+            has_path_file = (os.path.exists(path_file) or os.path.exists(orig_file)
+                             or os.path.exists(path_file + ".distrib"))
 
             if has_path_file:
                 rename_method = "path_file"
@@ -179,16 +204,26 @@ def node_name_for_route(dev, route):
     return node_names[0]
 
 
-def find_route(route_name):
+def find_route(route_name, device_name=None):
     """Find a route by name across all devices.
 
-    Returns (device, route) or (None, None) if not found.
+    Returns (device, route) or (None, None) if not found. Require an explicit
+    device when a route name is shared, rather than changing the first match.
     """
+    matches = []
     for dev in get_devices():
+        if device_name is not None and dev["device_name"] != device_name:
+            continue
         for route in dev["routes"]:
             if route["name"] == route_name:
-                return dev, route
-    return None, None
+                matches.append((dev, route))
+    if len(matches) > 1:
+        devices = ", ".join(dev["device_name"] for dev, _route in matches)
+        raise ValueError(
+            f"Route '{route_name}' exists on multiple devices. "
+            f"Specify --device with one of: {devices}"
+        )
+    return matches[0] if matches else (None, None)
 
 
 def get_path_file(route_name):
@@ -196,7 +231,7 @@ def get_path_file(route_name):
     if ".." in route_name or "/" in route_name or "\\" in route_name:
         raise ValueError(f"Invalid route name: {route_name}")
     path = os.path.join(PATHS_DIR, f"{route_name}.conf")
-    if not os.path.exists(path) and not os.path.exists(path + ".orig"):
+    if not any(os.path.exists(path + suffix) for suffix in ("", ".orig", ".distrib")):
         raise FileNotFoundError(f"No path file found for route '{route_name}'")
     return path
 
@@ -217,9 +252,9 @@ def is_renamed(route_name):
 
 
 def get_original_description(route_name):
-    """Get the original description key/value from the .orig file."""
+    """Get the original description from the current or legacy backup."""
     path = get_path_file(route_name)
-    orig = path + ".orig"
+    orig = _backup_path(path)
     if not os.path.exists(orig):
         return None
     return _read_description(orig)
@@ -292,27 +327,30 @@ def _ensure_backup(path):
     On Debian/Ubuntu this uses dpkg-divert. On other distros it copies the file
     manually. Returns True if a new backup was created.
 
-    Raises RuntimeError if the path is already diverted but the .orig backup is
-    missing (an inconsistent state that requires manual cleanup).
+    Reuse legacy .distrib targets. Refuse to overwrite a registered backup
+    that is missing or belongs to another diversion.
     """
-    orig = path + ".orig"
-    if os.path.exists(orig):
-        return False
-
+    orig = _backup_path(path)
     if _has_dpkg_divert():
         if path in _get_diverted_paths():
+            if os.path.exists(orig):
+                return False
             raise RuntimeError(
-                f"{path} is already diverted by dpkg-divert but the .orig backup is missing. "
-                "Run 'sudo dpkg-divert --local --rename --remove <path>' to repair."
+                f"The registered backup {orig} is missing. "
+                "Restore it from a backup or reinstall the package providing this path file."
             )
         try:
+            # Existing manual/orphaned backups must not be overwritten.
+            move = "--no-rename" if os.path.exists(orig) else "--rename"
             subprocess.run(
-                ["dpkg-divert", "--local", "--rename", "--add", path],
+                ["dpkg-divert", "--local", "--divert", orig, move, "--add", path],
                 check=True, capture_output=True, text=True,
             )
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"dpkg-divert failed: {e.stderr.strip() or 'unknown error'}")
     else:
+        if os.path.exists(orig):
+            return False
         try:
             shutil.copy2(path, orig)
         except OSError as e:
@@ -326,24 +364,25 @@ def _restore_backup(path):
     On Debian/Ubuntu this removes the dpkg-divert. On other distros it copies
     .orig back to path and deletes .orig.
     """
-    orig = path + ".orig"
+    orig = _backup_path(path)
     if not os.path.exists(orig):
         raise ValueError(f"No backup found for {path}")
 
-    if _has_dpkg_divert():
+    if _has_dpkg_divert() and path in _get_diverted_paths():
         try:
             subprocess.run(
-                ["dpkg-divert", "--local", "--rename", "--remove", path],
+                ["dpkg-divert", "--local", "--divert", orig, "--no-rename", "--remove", path],
                 check=True, capture_output=True, text=True,
             )
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"dpkg-divert revert failed: {e.stderr.strip() or 'unknown error'}")
-    else:
-        try:
-            shutil.copy2(orig, path)
-            os.remove(orig)
-        except OSError as e:
-            raise RuntimeError(f"Cannot restore backup for {path}: {e}")
+    # --rename cannot restore over the active customized file. Remove only the
+    # database entry first, then copy back; retain the backup if copying fails.
+    try:
+        shutil.copy2(orig, path)
+        os.remove(orig)
+    except OSError as e:
+        raise RuntimeError(f"Cannot restore backup for {path}: {e}")
 
 
 def _current_description(path):
@@ -380,8 +419,8 @@ def rename_port(route_name, new_name, method="path_file", node_name=None):
     # Create backup if not already present
     _ensure_backup(path)
 
-    # Read from .orig, write modified version to the main path
-    content = _modify_description(path + ".orig", new_name)
+    # Read the registered backup and write the modified active profile.
+    content = _modify_description(_backup_path(path), new_name)
     try:
         with open(path, "w") as f:
             f.write(content)
@@ -392,13 +431,14 @@ def rename_port(route_name, new_name, method="path_file", node_name=None):
     restart_pipewire()
 
 
-def revert_port(route_name, method="path_file", node_name=None):
+def revert_port(route_name, method="path_file", node_name=None, restart_audio=True):
     """Revert a renamed port to its original name. Must be run as root.
 
     Args:
         route_name: The route/port name (e.g. "analog-output-lineout").
         method: "path_file" (ALSA path config) or "wireplumber" (WirePlumber rule).
         node_name: Required when method is "wireplumber".
+        restart_audio: False for batch operations that restart audio once at the end.
     """
     if os.geteuid() != 0:
         raise PermissionError("Must be run as root")
@@ -408,7 +448,8 @@ def revert_port(route_name, method="path_file", node_name=None):
             raise ValueError("node_name is required for WirePlumber revert")
         wireplumber.revert_node(node_name)
         _clear_custom_name("wireplumber", node_name)
-        restart_pipewire()
+        if restart_audio:
+            restart_pipewire()
         return
 
     # Default: ALSA path file method
@@ -419,7 +460,8 @@ def revert_port(route_name, method="path_file", node_name=None):
 
     _restore_backup(path)
     _clear_custom_name("path_file", route_name)
-    restart_pipewire()
+    if restart_audio:
+        restart_pipewire()
 
 
 def get_all_renamed_path_files():
@@ -460,24 +502,32 @@ def revert_all():
     # Revert path-file renames
     for route_name in get_all_renamed_path_files():
         try:
-            revert_port(route_name)
+            revert_port(route_name, restart_audio=False)
             reverted.append(route_name)
         except (ValueError, RuntimeError) as e:
             failed.append((route_name, str(e)))
 
-    # Revert WirePlumber rules
-    for node_name, _desc in wireplumber.get_all_renamed():
+    # Clear saved names too, including entries whose rule is already missing,
+    # so a later repair cannot resurrect an explicitly reverted USB rename.
+    wp_rules = {name for name, _desc in wireplumber.get_all_renamed()}
+    wp_saved = _load_custom_name_store().get("wireplumber", {})
+    for node_name in sorted(wp_rules | set(wp_saved)):
         try:
-            wireplumber.revert_node(node_name)
+            if node_name in wp_rules:
+                wireplumber.revert_node(node_name)
+            _clear_custom_name("wireplumber", node_name)
             reverted.append(node_name)
-        except (ValueError, RuntimeError) as e:
+        except (OSError, ValueError, RuntimeError) as e:
             failed.append((node_name, str(e)))
+
+    if reverted:
+        restart_pipewire()
 
     return {"reverted": reverted, "failed": failed}
 
 
 def check_renames():
-    """Detect renames clobbered by package upgrades or external changes and re-apply them.
+    """Restore missing profiles and re-apply renames clobbered by upgrades.
 
     Returns {"repaired": [...], "failed": [(name, error), ...]}.
     """
@@ -492,20 +542,34 @@ def check_renames():
     # sidecar or actually diverted/backed-up on disk -- the sidecar alone can
     # miss renames made outside portname or lost to a corrupted sidecar file.
     path_file_entries = store.get("path_file", {})
-    all_route_names = sorted(set(path_file_entries) | set(get_all_renamed_path_files()))
+    orphaned = set()
+    if os.path.isdir(PATHS_DIR):
+        for filename in os.listdir(PATHS_DIR):
+            for suffix in (".conf.orig", ".conf.distrib"):
+                if filename.endswith(suffix):
+                    route = filename[:-len(suffix)]
+                    if not os.path.exists(os.path.join(PATHS_DIR, route + ".conf")):
+                        orphaned.add(route)
+    all_route_names = sorted(set(path_file_entries) | set(get_all_renamed_path_files()) | orphaned)
     for route_name in all_route_names:
         custom_name = path_file_entries.get(route_name)
         try:
             path = get_path_file(route_name)
-        except (FileNotFoundError, ValueError) as e:
+            orig_path = _backup_path(path)
+        except (FileNotFoundError, ValueError, RuntimeError) as e:
             failed.append((route_name, str(e)))
             continue
-
-        orig_path = path + ".orig"
 
         # If we don't have a sidecar entry for this route, try to derive one from
         # the current active file before deciding nothing needs repair.
         current = _current_description(path)
+        if current is None and not os.path.exists(path) and custom_name is None:
+            try:
+                shutil.copy2(orig_path, path)
+                repaired.append(route_name)
+            except OSError as e:
+                failed.append((route_name, str(e)))
+            continue
         if custom_name is None:
             original = _read_description(orig_path)
             if current is None or original is None:
@@ -530,9 +594,9 @@ def check_renames():
 
     # WirePlumber renames
     wp_entries = store.get("wireplumber", {})
-    existing_rules = {name for name, _desc in wireplumber.get_all_renamed()}
+    existing_rules = dict(wireplumber.get_all_renamed())
     for node_name, custom_name in wp_entries.items():
-        if node_name in existing_rules:
+        if existing_rules.get(node_name) == custom_name:
             continue
         try:
             wireplumber.rename_node(node_name, custom_name)
@@ -634,20 +698,34 @@ def _get_real_user():
 
 def restart_pipewire():
     """Restart PipeWire services. Runs as the real user if we're root via sudo/pkexec."""
+    prefix = []
+    if os.geteuid() == 0:
+        user, uid = _get_real_user()
+        prefix = ["sudo", "-u", user, f"XDG_RUNTIME_DIR=/run/user/{uid}"]
+    systemctl = prefix + ["systemctl", "--user"]
+    services = ["pipewire", "pipewire-pulse", "wireplumber"]
+    restart = systemctl + ["restart"] + services
     try:
-        if os.geteuid() == 0:
-            user, uid = _get_real_user()
+        try:
             subprocess.run(
-                ["sudo", "-u", user,
-                 f"XDG_RUNTIME_DIR=/run/user/{uid}",
-                 "systemctl", "--user", "restart",
-                 "pipewire", "pipewire-pulse", "wireplumber"],
+                restart,
                 check=True, capture_output=True, text=True, timeout=15,
             )
-        else:
+        except subprocess.CalledProcessError:
+            # Several quick renames can exhaust systemd's start counter. Reset
+            # only this specific failure; configuration failures remain errors.
+            state = subprocess.run(
+                systemctl + ["show", "--property=Result", "--value"] + services,
+                capture_output=True, text=True, timeout=5,
+            )
+            if state.returncode != 0 or "start-limit-hit" not in state.stdout.splitlines():
+                raise
             subprocess.run(
-                ["systemctl", "--user", "restart",
-                 "pipewire", "pipewire-pulse", "wireplumber"],
+                systemctl + ["reset-failed"] + services,
+                check=True, capture_output=True, text=True, timeout=5,
+            )
+            subprocess.run(
+                restart,
                 check=True, capture_output=True, text=True, timeout=15,
             )
     except subprocess.TimeoutExpired:

@@ -36,6 +36,15 @@ chmod +x install.sh
 ./install.sh
 ```
 
+To update a source installation, run these commands from its checkout. The
+installer must be run again because it copies the code into `/usr/lib/portname`:
+
+```bash
+git pull --ff-only origin master
+./install.sh
+sudo portname repair
+```
+
 ## Usage
 
 ### GUI (recommended for beginners)
@@ -53,6 +62,9 @@ sudo portname rename analog-output-lineout "JBL Headset"
 sudo portname rename analog-output-headphones "Pebble Speakers"
 sudo portname rename analog-input-rear-mic "JBL Headset Mic"
 
+# When several devices share a route, select the device shown by 'portname list'
+sudo portname rename analog-stereo "USB Headset" --device alsa_card.usb-Generic_USB_Audio_1234-00
+
 # Revert a single port
 sudo portname revert analog-output-lineout
 
@@ -61,6 +73,9 @@ sudo portname revert --all
 
 # Check for renames clobbered by a package upgrade and re-apply them (Arch/Fedora)
 sudo portname check
+
+# Recover missing ports left by older versions (also available in the GUI)
+sudo portname repair
 
 # Toggle Auto-Mute Mode (fixes issue where front jack silences rear jacks)
 portname auto-mute off
@@ -81,6 +96,17 @@ Audio port names on Linux come from ALSA card profile path files in `/usr/share/
 3. Restarts PipeWire so the change appears immediately
 
 Your custom names survive reboots. On **Debian/Ubuntu** the backup is registered with `dpkg-divert`, which also tells the package manager to skip the file on upgrades. On **other distros** (Arch, Fedora, etc.) the backup/restore logic is identical but there is no package-manager hook. An upgrade of `alsa-card-profile` can silently overwrite the modified file. Run `sudo portname check` after such an upgrade to detect and automatically re-apply any clobbered names. AUR/Copr package descriptions should note this and suggest adding a post-upgrade hook that calls `portname check`.
+
+### Recovering missing ports on Linux Mint / Ubuntu
+
+Older versions could leave the original profile in a `.conf.distrib` backup
+while looking for `.conf.orig`. After updating, click **Repair Missing Ports**
+in the GUI or run `sudo portname repair`. This restores missing profiles even
+when no custom name was saved, and reapplies saved names where available.
+Existing `.distrib` diversions are supported without manual removal. Repair
+keeps the original backup and reports any files it cannot recover.
+It also restores overwritten USB rename rules. **Revert all** removes both
+the rules and saved USB names, so repair will not bring reverted names back.
 
 ### USB audio devices
 
