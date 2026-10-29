@@ -182,7 +182,35 @@ def get_devices():
                 "routes": routes,
             })
 
+    _isolate_shared_usb_routes(devices)
     return devices
+
+
+def _isolate_shared_usb_routes(devices):
+    """Rename shared USB routes per node instead of via the global path file.
+
+    ALSA path files are shared by every card that exposes the route, so editing
+    one for a USB device also renames the same port on identical devices (and on
+    any other card using it). A WirePlumber rule targets a single node instead.
+    A USB route that already has a WirePlumber rule keeps that method even after
+    the other device is unplugged, so it can still be reverted.
+    """
+    route_counts = {}
+    for dev in devices:
+        for route in dev["routes"]:
+            route_counts[route["name"]] = route_counts.get(route["name"], 0) + 1
+
+    for dev in devices:
+        if dev["device_bus"] != "usb":
+            continue
+        for route in dev["routes"]:
+            if route["rename_method"] != "path_file":
+                continue
+            node_name = node_name_for_route(dev, route)
+            if not node_name:
+                continue
+            if route_counts[route["name"]] > 1 or wireplumber.is_node_renamed(node_name):
+                route["rename_method"] = "wireplumber"
 
 
 def node_name_for_route(dev, route):
