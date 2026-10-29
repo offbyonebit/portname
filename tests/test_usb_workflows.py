@@ -1,6 +1,7 @@
 """Regression coverage for device selection and complete USB rename workflows."""
 
 import argparse
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -133,3 +134,59 @@ def test_gui_passes_selected_device_through_privilege_boundary(monkeypatch, acti
         gui.PortNameWindow._do_revert(window, "analog-stereo", "alsa_card.usb-Second")
         expected = ["revert", "analog-stereo", "--device", "alsa_card.usb-Second"]
     root.assert_called_once_with(expected)
+
+
+def _identical_usb_dump(card_numbers=(0, 3)):
+    dump = []
+    for i, card in enumerate(card_numbers):
+        dev_id, suffix = 60 + i, "" if i == 0 else f".{i + 1}"
+        dump.append({"id": dev_id, "type": "PipeWire:Interface:Device", "info": {
+            "props": {"device.api": "alsa", "device.name": f"alsa_card.usb-Generic-00{suffix}",
+                      "device.bus": "usb", "alsa.card": card,
+                      "device.description": "USB Audio Device"},
+            "params": {"EnumRoute": [{"name": "analog-output-speaker",
+                                      "description": "Speakers", "direction": "Output"}]}}})
+        dump.append({"id": 100 + i, "type": "PipeWire:Interface:Node", "info": {
+            "props": {"node.name": f"alsa_output.usb-Generic-00{suffix}.analog-stereo",
+                      "device.id": dev_id, "media.class": "Audio/Sink"}}})
+    return dump
+
+
+@pytest.fixture
+def pw_dump(usb_setup, tmp_path, monkeypatch):
+    paths = tmp_path / "paths"
+    paths.mkdir()
+    (paths / "analog-output-speaker.conf").write_text("[General]\ndescription = Speakers\n")
+    monkeypatch.setattr(core.shutil, "which", lambda _cmd: "/usr/bin/pw-dump")
+    def set_dump(dump):
+        monkeypatch.setattr(core.subprocess, "run",
+                            lambda *a, **k: SimpleNamespace(stdout=json.dumps(dump)))
+    return set_dump
+
+
+def test_identical_usb_devices_rename_independently(pw_dump):
+    """A route shared by two USB cards must not be renamed via the global path file."""
+    pw_dump(_identical_usb_dump())
+    first, second = core.get_devices()
+    assert [r["rename_method"] for r in first["routes"] + second["routes"]] == \
+        ["wireplumber", "wireplumber"]
+
+    args = argparse.Namespace(route="analog-output-speaker", name="Left Desk",
+                              device=first["device_name"])
+    cli.cmd_rename(args)
+
+    assert not core.is_renamed("analog-output-speaker")
+    assert wireplumber.is_node_renamed("alsa_output.usb-Generic-00.analog-stereo")
+    assert not wireplumber.is_node_renamed("alsa_output.usb-Generic-00.2.analog-stereo")
+
+
+def test_single_usb_device_still_uses_path_file(pw_dump):
+    pw_dump(_identical_usb_dump(card_numbers=(0,)))
+    assert core.get_devices()[0]["routes"][0]["rename_method"] == "path_file"
+
+
+def test_usb_rule_stays_revertable_after_twin_unplugged(pw_dump):
+    node = "alsa_output.usb-Generic-00.analog-stereo"
+    core.rename_port("analog-output-speaker", "Left Desk", method="wireplumber", node_name=node)
+    pw_dump(_identical_usb_dump(card_numbers=(0,)))
+    assert core.get_devices()[0]["routes"][0]["rename_method"] == "wireplumber"
