@@ -142,7 +142,9 @@ class PortNameWindow(Gtk.Window):
 
         if renamed:
             renamed_badge = Gtk.Label()
-            renamed_badge.set_markup("<small>Renamed</small>")
+            # A WirePlumber rule renames the device, not this port's label.
+            badge = "Device renamed" if route["rename_method"] == "wireplumber" else "Renamed"
+            renamed_badge.set_markup(f"<small>{badge}</small>")
             renamed_badge.get_style_context().add_class("dim-label")
             badge_box.pack_start(renamed_badge, False, False, 0)
 

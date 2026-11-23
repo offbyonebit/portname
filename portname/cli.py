@@ -22,13 +22,18 @@ def _route_not_found(route_name):
 
 
 def _route_renamed_tag(dev, route):
-    """Return True if this route is currently renamed via its method."""
+    """Return the tag text for a renamed route, or None.
+
+    A WirePlumber rule renames the device (sink or source), not the port, so
+    say what it changed instead of implying the port label changed.
+    """
     if route["rename_method"] == "wireplumber":
         node_name = node_name_for_route(dev, route)
-        if node_name:
-            return wireplumber.is_node_renamed(node_name)
-        return False
-    return is_renamed(route["name"])
+        if node_name and wireplumber.is_node_renamed(node_name):
+            name = wireplumber.get_current_description(node_name)
+            return f"device renamed: {name}" if name else "device renamed"
+        return None
+    return "renamed" if is_renamed(route["name"]) else None
 
 
 def cmd_list(args):
@@ -51,8 +56,9 @@ def cmd_list(args):
             print(f"  {label}:")
             for r in routes:
                 tags = []
-                if _route_renamed_tag(dev, r):
-                    tags.append("renamed")
+                renamed_tag = _route_renamed_tag(dev, r)
+                if renamed_tag:
+                    tags.append(renamed_tag)
                 if r["available"] == "yes":
                     tags.append("available")
                 tag_str = f"  [{', '.join(tags)}]" if tags else ""
@@ -71,7 +77,14 @@ def cmd_rename(args):
         if method == "wireplumber" and not node_name:
             raise ValueError(f"No PipeWire node found for route '{args.route}'")
         rename_port(args.route, args.name, method=method, node_name=node_name)
-        print(f"Renamed '{args.route}' to '{args.name}'")
+        if method == "wireplumber":
+            print(f"Renamed device '{node_name}' to '{args.name}'")
+            label = route.get("description", args.route)
+            print(f"Note: this sets the device name. The port label '{label}' "
+                  "stays the same; apps that list devices (pavucontrol, wpctl status) show the "
+                  "new name.")
+        else:
+            print(f"Renamed '{args.route}' to '{args.name}'")
         print("Restarting PipeWire... done.")
     except (FileNotFoundError, ValueError, RuntimeError, PermissionError) as e:
         print(f"Error: {e}", file=sys.stderr)

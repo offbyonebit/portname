@@ -211,3 +211,17 @@ def test_usb_rename_fails_loudly_when_wireplumber_ignores_rule(usb_setup, monkey
 
     monkeypatch.setattr(core, "_pw_dump", lambda: _node_dump("Left Desk"))
     core.rename_port("analog-output-speaker", "Left Desk", method="wireplumber", node_name=node)
+
+
+def test_list_says_twin_rename_changed_the_device_not_the_port(pw_dump, capsys):
+    """The tag must not claim the port label changed when only the device did."""
+    pw_dump(_identical_usb_dump())
+    first, _second = core.get_devices()
+    cli.cmd_rename(argparse.Namespace(route="analog-output-speaker", name="Left Desk",
+                                      device=first["device_name"]))
+    assert "port label 'Speakers' stays the same" in capsys.readouterr().out
+
+    cli.cmd_list(argparse.Namespace())
+    lines = [l for l in capsys.readouterr().out.splitlines() if "analog-output-speaker" in l]
+    assert lines[0].split()[1:] == ["Speakers", "[device", "renamed:", "Left", "Desk]"]
+    assert lines[1].split()[1:] == ["Speakers"]

@@ -117,6 +117,8 @@ USB devices (headsets, DACs, webcams) have no ALSA profile path to edit, so `por
 
 `portname revert` deletes the rule, and `./install.sh --uninstall` removes any left over.
 
+A WirePlumber rule renames the device (the sink or source), not the port label. Portname also uses one when two identical USB cards share a port, so renaming one card does not rename both. `portname list` then shows `[device renamed: <name>]` next to the unchanged port label, and the new name appears in apps that list devices, such as pavucontrol or `wpctl status`.
+
 ## Compatibility
 
 | Distro | Status |
