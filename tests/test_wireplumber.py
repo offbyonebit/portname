@@ -329,3 +329,19 @@ class TestLuaFormat:
         R.stdout = "libwireplumber 0.5.6"
         monkeypatch.setattr(wireplumber, "_FORMAT", None)
         assert wireplumber._detect_format() == "conf"
+
+
+class TestFormatFallback:
+    def test_unreadable_version_uses_installed_layout(self, monkeypatch, tmp_path):
+        """A 0.4 system must get Lua rules even when --version can't be parsed."""
+        main_lua = tmp_path / "main.lua"
+        main_lua.write_text("")
+        monkeypatch.setattr(wireplumber, "_FORMAT", None)
+        monkeypatch.setattr(wireplumber, "_SHARE_MAIN_LUA", str(main_lua))
+        def no_wireplumber(*_a, **_k):
+            raise FileNotFoundError("wireplumber")
+        monkeypatch.setattr(wireplumber.subprocess, "run", no_wireplumber)
+        assert wireplumber._detect_format() == "lua"
+        main_lua.unlink()
+        monkeypatch.setattr(wireplumber, "_FORMAT", None)
+        assert wireplumber._detect_format() == "conf"

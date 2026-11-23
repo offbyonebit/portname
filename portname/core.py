@@ -7,6 +7,7 @@ import pwd
 import re
 import shutil
 import subprocess
+import time
 
 from portname import wireplumber
 
@@ -75,18 +76,8 @@ def _backup_path(path):
     return path + ".orig"
 
 
-def get_devices():
-    """Get all ALSA audio devices and their routes from PipeWire.
-
-    Returns a list of dicts:
-        [{"device_name": str, "device_description": str, "alsa_card": str,
-          "device_bus": str, "node_names": [str],
-          "routes": [{"name": str, "description": str, "direction": str,
-                       "available": str, "rename_method": str}]}]
-
-    rename_method is "path_file" for routes with ALSA path config files,
-    or "wireplumber" for USB routes without path files (renamed via WirePlumber rules).
-    """
+def _pw_dump():
+    """Return PipeWire's objects as parsed pw-dump JSON."""
     if not shutil.which("pw-dump"):
         raise RuntimeError(
             "pw-dump not found. Is PipeWire installed?\n"
@@ -110,9 +101,40 @@ def get_devices():
         raise RuntimeError(f"pw-dump failed: {e.stderr.strip() or 'unknown error'}")
 
     try:
-        data = json.loads(result.stdout)
+        return json.loads(result.stdout)
     except json.JSONDecodeError:
         raise RuntimeError("pw-dump returned invalid JSON — PipeWire may be misconfigured")
+
+
+def node_has_description(node_name, description, attempts=5):
+    """Wait for PipeWire to show a node with this description after a restart."""
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(1)
+        try:
+            data = _pw_dump()
+        except RuntimeError:
+            continue  # PipeWire may still be starting
+        for obj in data:
+            props = obj.get("info", {}).get("props", {})
+            if props.get("node.name") == node_name and props.get("node.description") == description:
+                return True
+    return False
+
+
+def get_devices():
+    """Get all ALSA audio devices and their routes from PipeWire.
+
+    Returns a list of dicts:
+        [{"device_name": str, "device_description": str, "alsa_card": str,
+          "device_bus": str, "node_names": [str],
+          "routes": [{"name": str, "description": str, "direction": str,
+                       "available": str, "rename_method": str}]}]
+
+    rename_method is "path_file" for routes with ALSA path config files,
+    or "wireplumber" for USB routes without path files (renamed via WirePlumber rules).
+    """
+    data = _pw_dump()
 
     # First pass: collect node names keyed by device.name so we can associate
     # PipeWire nodes with their parent devices.
@@ -439,6 +461,11 @@ def rename_port(route_name, new_name, method="path_file", node_name=None):
         wireplumber.rename_node(node_name, new_name)
         _store_custom_name("wireplumber", node_name, new_name)
         restart_pipewire()
+        if not node_has_description(node_name, new_name):
+            raise RuntimeError(
+                f"Wrote {wireplumber.rule_path(node_name)}, but WirePlumber did not apply it "
+                f"after restarting. Check that this folder matches 'wireplumber --version'."
+            )
         return
 
     # Default: ALSA path file method

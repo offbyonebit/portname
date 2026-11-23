@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from portname import cli, core, wireplumber
+from portname.core import node_has_description as check_node
 
 
 @pytest.fixture
@@ -190,3 +191,23 @@ def test_usb_rule_stays_revertable_after_twin_unplugged(pw_dump):
     core.rename_port("analog-output-speaker", "Left Desk", method="wireplumber", node_name=node)
     pw_dump(_identical_usb_dump(card_numbers=(0,)))
     assert core.get_devices()[0]["routes"][0]["rename_method"] == "wireplumber"
+
+
+def _node_dump(description):
+    return [{"id": 100, "type": "PipeWire:Interface:Node", "info": {"props": {
+        "node.name": "alsa_output.usb-Generic-00.analog-stereo",
+        "node.description": description, "media.class": "Audio/Sink"}}}]
+
+
+def test_usb_rename_fails_loudly_when_wireplumber_ignores_rule(usb_setup, monkeypatch):
+    """Saying 'renamed' while the device keeps its old name is the reported bug."""
+    monkeypatch.setattr(core, "node_has_description", check_node)
+    monkeypatch.setattr(core.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(core, "_pw_dump", lambda: _node_dump("USB Audio Device Analog Stereo"))
+    node = "alsa_output.usb-Generic-00.analog-stereo"
+    with pytest.raises(RuntimeError, match="did not apply"):
+        core.rename_port("analog-output-speaker", "Left Desk", method="wireplumber", node_name=node)
+    usb_setup.assert_called_once()
+
+    monkeypatch.setattr(core, "_pw_dump", lambda: _node_dump("Left Desk"))
+    core.rename_port("analog-output-speaker", "Left Desk", method="wireplumber", node_name=node)

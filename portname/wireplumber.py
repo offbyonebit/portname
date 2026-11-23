@@ -29,23 +29,29 @@ else:
 _FILE_PREFIX = "90-portname-"
 
 _FORMAT = None  # "lua" or "conf"; detected lazily, overridable for tests
+_SHARE_MAIN_LUA = "/usr/share/wireplumber/main.lua"
 
 
 def _detect_format():
     """Return "lua" for WirePlumber 0.4.x, otherwise "conf" (0.5+)."""
     global _FORMAT
     if _FORMAT is None:
-        _FORMAT = "conf"
+        m = None
         try:
             out = subprocess.run(
                 ["wireplumber", "--version"], capture_output=True, text=True,
                 timeout=5,
             ).stdout
             m = re.search(r"libwireplumber\s+(\d+)\.(\d+)", out)
-            if m and (int(m.group(1)), int(m.group(2))) < (0, 5):
-                _FORMAT = "lua"
         except (OSError, subprocess.SubprocessError):
-            log.warning("Could not detect WirePlumber version; assuming 0.5+")
+            pass
+        if m:
+            _FORMAT = "lua" if (int(m.group(1)), int(m.group(2))) < (0, 5) else "conf"
+        else:
+            # A 0.5 rule in a 0.4 system is silently ignored, so fall back to the
+            # installed layout: 0.4 ships main.lua, 0.5 ships wireplumber.conf.
+            _FORMAT = "lua" if os.path.exists(_SHARE_MAIN_LUA) else "conf"
+            log.warning("Could not detect WirePlumber version; using %s rules", _FORMAT)
     return _FORMAT
 
 
@@ -175,6 +181,11 @@ def revert_node(node_name):
         raise RuntimeError(f"Cannot remove WirePlumber config {path}: {e}")
 
     log.info("WirePlumber rule removed: %s", path)
+
+
+def rule_path(node_name):
+    """Return where the rename rule for a node is written."""
+    return _config_path(node_name)
 
 
 def is_node_renamed(node_name):
